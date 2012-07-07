@@ -82,7 +82,8 @@ def parse_options
     :history_base => nil,
     :expire => 7,
     :verbose => false,
-    :dry => false
+    :dry => false,
+    :ignore => []
   }
 
   OptionParser.new do |o|
@@ -97,14 +98,25 @@ Usage: #{File.basename($0)} BASE [-h|--history-base DIR] [-e|--expire DAYS]}
 Options:
 ENDL
 
-    o.on('-h', '--history-base', 'Directory to save history. Default: <BASE>/HISTORY') {|val| opts[:history_base] = val}
-    o.on('-e N', '--expire N', 'How many days files will wait before being rotated') {|val| opts[:expire] = val.to_i}
-    o.on('-v', '--verbose', 'Do verbose logging') {|val| opts[:verbose] = val}
-    o.on('-d', '--dry', 'Do not actually archive files, only log') {|val| opts[:dry] = val}
+    o.on('-h', '--history-base', 'Directory to save history. Default: <BASE>/HISTORY') do |val|
+      opts[:history_base] = val
+    end
+    o.on('-e N', '--expire N', 'How many days files will wait before being rotated') do |val|
+      opts[:expire] = val.to_i
+    end
+    o.on('-v', '--verbose', 'Do verbose logging') do |val|
+      opts[:verbose] = val
+    end
+    o.on('-d', '--dry', 'Do not actually archive files, only log') do |val|
+      opts[:dry] = val
+    end
+    o.on('-i', '--ignore S', 'Ignore given directories or files. Can be used multiple times') do |val|
+      opts[:ignore].push(val)
+    end
   end.parse!
 
   opts[:base] = ARGV[0] or raise OptionParser::MissingArgument
-  opts[:history_base ]||= "#{opts[:base]}/HISTORY"
+  opts[:history_base ] ||= "#{opts[:base]}/HISTORY"
   opts
 end
 
@@ -117,15 +129,16 @@ opts = parse_options
 
 $log = Logger.new(STDOUT)
 $log.level = opts[:verbose] ? Logger::DEBUG : Logger::WARN
+$log.debug "Options #{opts.inspect}"
 
 now = Date.parse(Time.now.to_s)
-
 history = HistoryDir.new(opts[:history_base], :dry => opts[:dry])
 
 # Walk through all entries
 Dir.glob("#{opts[:base]}/*", File::FNM_DOTMATCH).each do |path|
   next if File.expand_path(path) == File.expand_path(opts[:history_base])
   next if ['.', '..'].include?(File.basename(path))
+  next if opts[:ignore].include?(File.basename(path))
 
   entry = Entry.new(path)
   if entry.mdate + opts[:expire] < now

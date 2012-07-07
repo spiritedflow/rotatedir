@@ -25,11 +25,21 @@ class Entry
   private
 
   def calculate_last_modified(path)
-    if File.directory?(path)
-      times = Dir["#{path}/*"].map do |entry|
+
+    # Symlink - skip
+    if File.symlink?(path)
+      Time.at(0)
+
+    # Directory - recursively get max mtime
+    elsif File.directory?(path)
+      times = Dir.glob("#{path}/*", File::FNM_DOTMATCH).map do |entry|
+        next nil if ['.', '..'].include?(File.basename(entry))
         calculate_last_modified(entry)
-      end
-      times.max || File.mtime(path)
+      end.compact
+      times << File.mtime(path)
+      times.max
+
+    # File - own mtime
     else
       File.mtime(path)
     end
@@ -66,18 +76,17 @@ class HistoryDir
   end
 end
 
-# --------------------------------------------------
-# Main
-# --------------------------------------------------
+def parse_options
+  opts = {
+    :base => nil,
+    :history_base => nil,
+    :expire => 7,
+    :verbose => false,
+    :dry => false
+  }
 
-# Parse options
-history_base = nil
-expire = 7
-verbose = false
-dry = false
-
-OptionParser.new do |opts|
-  opts.banner = <<ENDL
+  OptionParser.new do |o|
+    o.banner = <<ENDL
 Description:
   This script should archive all obsolete files and directories
   to special 'history' directory and group them by date. So all
@@ -88,26 +97,38 @@ Usage: #{File.basename($0)} BASE [-h|--history-base DIR] [-e|--expire DAYS]}
 Options:
 ENDL
 
-  opts.on('-h', '--history-base', 'Directory to save history. Default: BASE/history') {|val| history_base = val}
-  opts.on('-e N', '--expire N', 'How many days files will wait before being rotated') {|val| expire = val.to_i}
-  opts.on('-v', '--verbose', 'Do verbose logging') {|val| verbose = val}
-  opts.on('-d', '--dry', 'Do not actually archive files, only log') {|val| dry = val}
-end.parse!
+    o.on('-h', '--history-base', 'Directory to save history. Default: <BASE>/HISTORY') {|val| opts[:history_base] = val}
+    o.on('-e N', '--expire N', 'How many days files will wait before being rotated') {|val| opts[:expire] = val.to_i}
+    o.on('-v', '--verbose', 'Do verbose logging') {|val| opts[:verbose] = val}
+    o.on('-d', '--dry', 'Do not actually archive files, only log') {|val| opts[:dry] = val}
+  end.parse!
+
+  opts[:base] = ARGV[0] or raise OptionParser::MissingArgument
+  opts[:history_base ]||= "#{opts[:base]}/HISTORY"
+  opts
+end
+
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+
+# Parse options
+opts = parse_options
 
 $log = Logger.new(STDOUT)
-$log.level = verbose ? Logger::DEBUG : Logger::WARN
+$log.level = opts[:verbose] ? Logger::DEBUG : Logger::WARN
 
 now = Date.parse(Time.now.to_s)
 
-base = ARGV[0] or raise OptionParser::MissingArgument
-history_base ||= "#{base}/history"
-history = HistoryDir.new(history_base, :dry => dry)
+history = HistoryDir.new(opts[:history_base], :dry => opts[:dry])
 
 # Walk through all entries
-Dir["#{base}/*"].each do |path|
-  next if File.expand_path(path) == File.expand_path(history_base)
+Dir.glob("#{opts[:base]}/*", File::FNM_DOTMATCH).each do |path|
+  next if File.expand_path(path) == File.expand_path(opts[:history_base])
+  next if ['.', '..'].include?(File.basename(path))
+
   entry = Entry.new(path)
-  if entry.mdate + expire < now
+  if entry.mdate + opts[:expire] < now
     history.archive(entry)
   else
     $log.debug("Skip #{entry.inspect}, it's too fresh")
